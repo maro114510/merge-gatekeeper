@@ -32,6 +32,16 @@ const (
 	maxCheckRunsPerPage = 100
 )
 
+// checkRunSeverity ranks the worst-case state of a check run.
+// Higher values indicate a more severe (blocking) state.
+// This ordering ensures that when multiple runs share the same name,
+// the most actionable state is preserved.
+const (
+	sevSuccess = iota // neutral or success conclusion
+	sevPending        // run not yet completed
+	sevError          // any non-success, non-skip conclusion
+)
+
 var (
 	ErrInvalidCombinedStatusResponse = errors.New("github combined status response is invalid")
 	ErrInvalidCheckRunResponse       = errors.New("github checkRun response is invalid")
@@ -219,7 +229,6 @@ func (sv *statusValidator) listGhaStatuses(ctx context.Context) ([]*ghaStatus, e
 	// Aggregate check runs by name using worst-case severity.
 	// SKIPPED runs are excluded entirely so they do not shadow subsequent FAILURE runs
 	// for the same job name (e.g. when push-triggered SKIPPED runs precede PR-triggered failures).
-	// Severity: error=2 > pending=1 > success=0
 	type jobRecord struct {
 		state string
 		sev   int
@@ -236,18 +245,18 @@ func (sv *statusValidator) listGhaStatuses(ctx context.Context) ([]*ghaStatus, e
 
 		if *run.Status != checkRunCompletedStatus {
 			state = pendingState
-			sev = 1
+			sev = sevPending
 		} else {
 			switch *run.Conclusion {
 			case checkRunNeutralConclusion, checkRunSuccessConclusion:
 				state = successState
-				sev = 0
+				sev = sevSuccess
 			case checkRunSkipConclusion:
 				// Do not register: a later run with the same name may have a non-skip conclusion.
 				continue
 			default:
 				state = errorState
-				sev = 2
+				sev = sevError
 			}
 		}
 
