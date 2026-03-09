@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/upsidr/merge-gatekeeper/internal/github"
@@ -593,6 +594,179 @@ func Test_statusValidator_listStatuses(t *testing.T) {
 				},
 			}
 		}(),
+		"same-named check runs: skipped then failure is reported as error": func() test {
+			zero := 0
+			c := &mock.Client{
+				GetCombinedStatusFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListOptions) (*github.CombinedStatus, *github.Response, error) {
+					return &github.CombinedStatus{
+						Statuses:   []*github.RepoStatus{},
+						TotalCount: &zero,
+					}, nil, nil
+				},
+				ListCheckRunsForRefFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListCheckRunsOptions) (*github.ListCheckRunsResults, *github.Response, error) {
+					two := 2
+					return &github.ListCheckRunsResults{
+						CheckRuns: []*github.CheckRun{
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr(checkRunSkipConclusion),
+							},
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr("failure"),
+							},
+						},
+						Total: &two,
+					}, nil, nil
+				},
+			}
+			return test{
+				fields: fields{
+					client:      c,
+					selfJobName: "self-job",
+					owner:       "test-owner",
+					repo:        "test-repo",
+					ref:         "main",
+				},
+				wantErr: false,
+				want: []*ghaStatus{
+					{
+						Job:   "terraform-plan",
+						State: errorState,
+					},
+				},
+			}
+		}(),
+		"same-named check runs: success and pending is reported as pending": func() test {
+			zero := 0
+			c := &mock.Client{
+				GetCombinedStatusFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListOptions) (*github.CombinedStatus, *github.Response, error) {
+					return &github.CombinedStatus{
+						Statuses:   []*github.RepoStatus{},
+						TotalCount: &zero,
+					}, nil, nil
+				},
+				ListCheckRunsForRefFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListCheckRunsOptions) (*github.ListCheckRunsResults, *github.Response, error) {
+					two := 2
+					return &github.ListCheckRunsResults{
+						CheckRuns: []*github.CheckRun{
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr(checkRunSuccessConclusion),
+							},
+							{
+								Name:   stringPtr("terraform-plan"),
+								Status: stringPtr("in_progress"),
+							},
+						},
+						Total: &two,
+					}, nil, nil
+				},
+			}
+			return test{
+				fields: fields{
+					client:      c,
+					selfJobName: "self-job",
+					owner:       "test-owner",
+					repo:        "test-repo",
+					ref:         "main",
+				},
+				wantErr: false,
+				want: []*ghaStatus{
+					{
+						Job:   "terraform-plan",
+						State: pendingState,
+					},
+				},
+			}
+		}(),
+		"same-named check runs: error and pending is reported as error": func() test {
+			zero := 0
+			c := &mock.Client{
+				GetCombinedStatusFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListOptions) (*github.CombinedStatus, *github.Response, error) {
+					return &github.CombinedStatus{
+						Statuses:   []*github.RepoStatus{},
+						TotalCount: &zero,
+					}, nil, nil
+				},
+				ListCheckRunsForRefFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListCheckRunsOptions) (*github.ListCheckRunsResults, *github.Response, error) {
+					two := 2
+					return &github.ListCheckRunsResults{
+						CheckRuns: []*github.CheckRun{
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr("failure"),
+							},
+							{
+								Name:   stringPtr("terraform-plan"),
+								Status: stringPtr("in_progress"),
+							},
+						},
+						Total: &two,
+					}, nil, nil
+				},
+			}
+			return test{
+				fields: fields{
+					client:      c,
+					selfJobName: "self-job",
+					owner:       "test-owner",
+					repo:        "test-repo",
+					ref:         "main",
+				},
+				wantErr: false,
+				want: []*ghaStatus{
+					{
+						Job:   "terraform-plan",
+						State: errorState,
+					},
+				},
+			}
+		}(),
+		"same-named check runs: all skipped are excluded from results": func() test {
+			zero := 0
+			c := &mock.Client{
+				GetCombinedStatusFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListOptions) (*github.CombinedStatus, *github.Response, error) {
+					return &github.CombinedStatus{
+						Statuses:   []*github.RepoStatus{},
+						TotalCount: &zero,
+					}, nil, nil
+				},
+				ListCheckRunsForRefFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListCheckRunsOptions) (*github.ListCheckRunsResults, *github.Response, error) {
+					two := 2
+					return &github.ListCheckRunsResults{
+						CheckRuns: []*github.CheckRun{
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr(checkRunSkipConclusion),
+							},
+							{
+								Name:       stringPtr("terraform-plan"),
+								Status:     stringPtr(checkRunCompletedStatus),
+								Conclusion: stringPtr(checkRunSkipConclusion),
+							},
+						},
+						Total: &two,
+					}, nil, nil
+				},
+			}
+			return test{
+				fields: fields{
+					client:      c,
+					selfJobName: "self-job",
+					owner:       "test-owner",
+					repo:        "test-repo",
+					ref:         "main",
+				},
+				wantErr: false,
+				want:    []*ghaStatus{},
+			}
+		}(),
 		"returns error when the GetCombinedStatus returns an error": func() test {
 			c := &mock.Client{
 				GetCombinedStatusFunc: func(ctx context.Context, owner, repo, ref string, opts *github.ListOptions) (*github.CombinedStatus, *github.Response, error) {
@@ -927,6 +1101,11 @@ func Test_statusValidator_listStatuses(t *testing.T) {
 			if got, want := len(got), len(tt.want); got != want {
 				t.Errorf("statusValidator.listStatuses() length = %v, want %v", got, want)
 			}
+			sortStatuses := func(s []*ghaStatus) {
+				sort.Slice(s, func(i, j int) bool { return s[i].Job < s[j].Job })
+			}
+			sortStatuses(got)
+			sortStatuses(tt.want)
 			for i := range tt.want {
 				if !reflect.DeepEqual(got[i], tt.want[i]) {
 					t.Errorf("statusValidator.listStatuses() - %d = %v, want %v", i, got[i], tt.want[i])
