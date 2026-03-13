@@ -201,10 +201,17 @@ func (sv *statusValidator) listGhaStatuses(ctx context.Context) ([]*ghaStatus, e
 		return nil, err
 	}
 
-	// Because multiple jobs with the same name may exist when jobs are created dynamically by third-party tools, etc.,
-	// only the latest job should be managed.
+	// currentJobs tracks context/job names already added to ghaStatuses to avoid duplicates
+	// across the Combined Status and Check Runs results.
 	currentJobs := make(map[string]struct{})
 
+	// GitHub's Commit Status API returns at most one entry per context name in the combined
+	// status response — the most recent status for that context overwrites older ones on the
+	// GitHub side. See: https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
+	// The first-wins guard below is therefore a defensive measure against unexpected duplicates
+	// rather than a routine deduplication path.
+	// Note: Check Runs can have multiple runs sharing the same name (e.g. reusable workflows),
+	// so that path requires worst-case severity aggregation instead. See listCheckRunsForRef.
 	ghaStatuses := make([]*ghaStatus, 0, len(combined))
 	for _, s := range combined {
 		if s.Context == nil || s.State == nil {
