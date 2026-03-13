@@ -32,6 +32,16 @@ const (
 	maxCheckRunsPerPage = 100
 )
 
+// checkRunSeverity ranks the worst-case state of a check run.
+// Higher values indicate a more severe (blocking) state.
+// This ordering ensures that when multiple runs share the same name,
+// the most actionable state is preserved.
+const (
+	sevSuccess = iota // neutral or success conclusion
+	sevPending        // run not yet completed
+	sevError          // any non-success, non-skip conclusion
+)
+
 var (
 	ErrInvalidCombinedStatusResponse = errors.New("github combined status response is invalid")
 	ErrInvalidCheckRunResponse       = errors.New("github checkRun response is invalid")
@@ -216,34 +226,54 @@ func (sv *statusValidator) listGhaStatuses(ctx context.Context) ([]*ghaStatus, e
 		return nil, err
 	}
 
+	// Aggregate check runs by name using worst-case severity.
+	// SKIPPED runs are excluded entirely so they do not shadow subsequent FAILURE runs
+	// for the same job name (e.g. when push-triggered SKIPPED runs precede PR-triggered failures).
+	type jobRecord struct {
+		state string
+		sev   int
+	}
+	checkRunJobs := make(map[string]*jobRecord)
+
 	for _, run := range runResults {
 		if run.Name == nil || run.Status == nil {
 			return nil, fmt.Errorf("%w name: %v, status: %v", ErrInvalidCheckRunResponse, run.Name, run.Status)
 		}
-		if _, ok := currentJobs[*run.Name]; ok {
-			continue
-		}
-		currentJobs[*run.Name] = struct{}{}
 
-		ghaStatus := &ghaStatus{
-			Job: *run.Name,
-		}
+		var state string
+		var sev int
 
 		if *run.Status != checkRunCompletedStatus {
-			ghaStatus.State = pendingState
-			ghaStatuses = append(ghaStatuses, ghaStatus)
-			continue
+			state = pendingState
+			sev = sevPending
+		} else {
+			switch *run.Conclusion {
+			case checkRunNeutralConclusion, checkRunSuccessConclusion:
+				state = successState
+				sev = sevSuccess
+			case checkRunSkipConclusion:
+				// Do not register: a later run with the same name may have a non-skip conclusion.
+				continue
+			default:
+				state = errorState
+				sev = sevError
+			}
 		}
 
-		switch *run.Conclusion {
-		case checkRunNeutralConclusion, checkRunSuccessConclusion:
-			ghaStatus.State = successState
-		case checkRunSkipConclusion:
-			continue
-		default:
-			ghaStatus.State = errorState
+		if existing, ok := checkRunJobs[*run.Name]; !ok || sev > existing.sev {
+			checkRunJobs[*run.Name] = &jobRecord{state: state, sev: sev}
 		}
-		ghaStatuses = append(ghaStatuses, ghaStatus)
+	}
+
+	for name, rec := range checkRunJobs {
+		if _, ok := currentJobs[name]; ok {
+			continue
+		}
+		currentJobs[name] = struct{}{}
+		ghaStatuses = append(ghaStatuses, &ghaStatus{
+			Job:   name,
+			State: rec.state,
+		})
 	}
 
 	return ghaStatuses, nil
